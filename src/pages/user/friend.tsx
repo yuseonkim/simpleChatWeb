@@ -14,6 +14,9 @@ export default function Home() {
   // 메시지 핸들러
   const handleInserts = (payload: any) => {
     console.log("Change received!", payload);
+    fetchAllFriend();
+    fetchRequestedFriend();
+    fetchSentFriend();
   };
 
   const handleSendFriendRequest = async () => {
@@ -48,6 +51,7 @@ export default function Home() {
     setNewFriend("");
   };
 
+  // 보낸 요청 목록 업데이트
   const fetchSentFriend = async () => {
     const user = await supabase.auth.getUser();
     if (supabase === null) {
@@ -86,9 +90,11 @@ export default function Home() {
         return data[0].username;
       })
     );
+    setSentFrineds(dataArray);
     return dataArray;
   };
 
+  // 받은 요청 목록 업데이트
   const fetchRequestedFriend = async () => {
     const user = await supabase.auth.getUser();
     if (supabase === null) {
@@ -127,6 +133,8 @@ export default function Home() {
         return data[0].username;
       })
     );
+
+    setRequestedFriends(dataArray);
     return dataArray;
   };
 
@@ -174,6 +182,7 @@ export default function Home() {
         return data[0].username;
       })
     );
+
     return dataArray;
   };
 
@@ -217,18 +226,21 @@ export default function Home() {
     return dataArray;
   };
 
-  const acceptRequested = async (username: string) => {
-    const user = supabase.auth.getUser();
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("username", username);
-
-    if (error) {
-      console.log(error.message);
-    }
+  const fetchAllFriend = async () => {
+    await fetchFriends().then((friends) => {
+      if (friends === undefined) {
+        return;
+      }
+      fetchFriends2().then((friends2) => {
+        if (friends === undefined) {
+          return;
+        }
+        setFriends(friends.concat(friends2));
+      });
+    });
   };
 
+  //친구요청 거절
   const denyRequested = async (username: string) => {
     const user = await supabase.auth.getUser();
     const { data, error } = await supabase
@@ -240,13 +252,20 @@ export default function Home() {
       console.log(error.message);
     }
 
+    if (data == null) {
+      return;
+    }
+
     await supabase
       .from("friend_requests")
       .delete()
-      .eq("to_user_name", user.data.user?.id)
-      .eq("from_user_name", username);
+      .eq("to_user_id", user.data.user?.id)
+      .eq("from_user_id", data[0].id);
+
+    fetchRequestedFriend();
   };
 
+  //친구 요청 취소
   const deleteSent = async (username: string) => {
     const user = await supabase.auth.getUser();
     const { data, error } = await supabase
@@ -257,12 +276,18 @@ export default function Home() {
     if (error) {
       console.log(error.message);
     }
+
+    if (data == null) {
+      return;
+    }
     await supabase
       .from("friend_requests")
       .delete()
-      .eq("from_user_name", user.data.user?.id)
-      .eq("to_user_name", username)
+      .eq("from_user_id", user.data.user?.id)
+      .eq("to_user_id", data[0].id)
       .eq("status", false);
+
+    fetchRequestedFriend();
   };
 
   const deleteFriend = async (username: string) => {
@@ -270,24 +295,27 @@ export default function Home() {
     const { data, error } = await supabase
       .from("profiles")
       .select("id")
-      .eq("username", username)
-      .eq("status", false);
+      .eq("username", username);
 
     if (error) {
       console.log(error.message);
     }
-    (await supabase
+
+    if (data == null) {
+      return;
+    }
+    await supabase
       .from("friend_requests")
       .delete()
-      .eq("to_user_name", user.data.user?.id)
-      .eq("from_user_name", username)
-      .eq("status", true)) ||
-      supabase
-        .from("friend_requests")
-        .delete()
-        .eq("from_user_name", user.data.user?.id)
-        .eq("to_user_name", username)
-        .eq("status", true);
+      .eq("to_user_id", user.data.user?.id)
+      .eq("from_user_id", data[0].id)
+      .eq("status", true);
+    await supabase
+      .from("friend_requests")
+      .delete()
+      .eq("from_user_id", user.data.user?.id)
+      .eq("to_user_id", data[0].id)
+      .eq("status", true);
   };
 
   const acceptFriend = async (username: string) => {
@@ -313,42 +341,69 @@ export default function Home() {
       .eq("to_user_id", user.data.user?.id)
       .eq("from_user_id", data[0].id)
       .select();
+
+    fetchRequestedFriend();
   };
 
   useEffect(() => {
     if (!supabase) {
       return;
     }
-    // 채널 연결 및 posts테이블의 INSERT 변경사항 추적
+    // 채널 연결 및 table_requests 테이블의 변경사항 추적
     supabase
       .channel(CHANNEL)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "friend_request" },
+        { event: "INSERT", schema: "public", table: "friend_requests" },
         handleInserts
       )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "friend_requests" },
+        handleInserts
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "friend_requests" },
+        handleInserts
+      )
+      .subscribe();
+
+    /*
+      supabase
+      .channel(CHANNEL)
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "friend_requests" },
+        handleInserts
+      )
+      .subscribe();
+
+    supabase
+      .channel(CHANNEL)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "friend_requests" },
+        handleInserts
+      )
+      .subscribe();
+    supabase
+      .channel(CHANNEL)
       .on("presence", { event: "sync" }, () => {
         console.log("presence sync");
       })
       .subscribe();
+      */
+
     // 기존 채팅방 가져오기
 
-    fetchFriends().then((friends) => {
-      if (friends === undefined) {
-        return;
-      }
-      fetchFriends2().then((friends2) => {
-        if (friends === undefined) {
-          return;
-        }
-        setFriends(friends.concat(friends2));
-      });
-    });
+    fetchAllFriend();
 
     fetchSentFriend().then((friends) => {
       if (friends === undefined) {
         return;
       }
+      console.log(friends);
       setSentFrineds(friends);
     });
 

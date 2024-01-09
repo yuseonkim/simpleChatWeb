@@ -22,11 +22,16 @@ export default function Login() {
   };
 
   const handleSignIn = async () => {
-    await supabase.auth.signInWithPassword({
+    const response = await supabase.auth.signInWithPassword({
       email,
       password,
     });
-    router.refresh();
+    if (response.error) {
+      console.log(response.error.message);
+      return;
+    } else {
+      router.refresh();
+    }
   };
 
   const handleSignOut = async () => {

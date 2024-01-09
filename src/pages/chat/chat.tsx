@@ -7,17 +7,16 @@ import {
   createClient,
 } from "@supabase/supabase-js";
 import { useRouter } from "next/router";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
-const DATABASE_URL = "https://jhndwoykhhfjycwvxjaz.supabase.co";
-const API_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpobmR3b3lraGhmanljd3Z4amF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDQyNzQ4MTksImV4cCI6MjAxOTg1MDgxOX0.C622JEBRLj8mMRV0QBuqwwbNf26yEXvd6AsGbn_3pms";
 const TABLE_NAME = "messages";
+const supabase = createClientComponentClient();
 
 export default function Chat() {
   const [messages, setMessages] = useState<string[]>([]);
   const [newMessage, setNewMessage] = useState<string>("");
-  const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
-  const [channel, setChannel] = useState<RealtimeChannel | null>(null);
+  const [friends, setFriends] = useState<string[]>([]);
+
   const [nickname, setNickname] = useState<string>("anon");
 
   const router = useRouter();
@@ -25,7 +24,7 @@ export default function Chat() {
   // 현재 페이지의 쿼리 파라미터를 가져오기
   const query = router.query;
   const channelName = query.channelName as string;
-  const roomId = Number(query.roomId);
+  const roomId = query.roomId;
 
   /**
    * 채널 INSERT 이벤트 핸들러
@@ -49,10 +48,7 @@ export default function Chat() {
       return;
     }
 
-    const { error } = await supabase
-      .from(TABLE_NAME)
-      .delete()
-      .eq("room_id", roomId);
+    const { error } = await supabase.from(TABLE_NAME).delete().eq("id", roomId);
 
     if (error) {
       console.error("Delete error:", error.message);
@@ -93,13 +89,17 @@ export default function Chat() {
    * @returns {Promise<void>}
    */
   const handleSendMessage = async () => {
+    const user = await supabase?.auth.getUser();
+    console.log(user?.data.user?.id, "aa");
     if (supabase === null) {
       return;
     }
 
     const { data, error } = await supabase
       .from(TABLE_NAME)
-      .insert([{ username: nickname, content: newMessage, room_id: roomId }]);
+      .insert([
+        { user_id: user?.data.user?.id, content: newMessage, room_id: roomId },
+      ]);
 
     if (error) {
       console.error("Insert error:", error.message);
@@ -109,26 +109,130 @@ export default function Chat() {
     setNewMessage("");
   };
 
-  // supabase 연결
-  useEffect(() => {
-    const supabaseClient = createClient(DATABASE_URL, API_KEY);
-    console.log("connect supabase");
+  const fetchFriends = async () => {
+    const user = await supabase.auth.getUser();
+    if (supabase === null) {
+      return;
+    }
+    const { data, error } = await supabase
+      .from("friend_requests")
+      .select("from_user_id")
+      .eq("to_user_id", user.data.user?.id)
+      .eq("status", true);
 
-    setSupabase(supabaseClient);
+    if (error) {
+      console.error("Fetch error:", error.message);
+      return;
+    }
+    if (data == null) {
+      console.log("error");
+      return;
+    }
+    console.log(data);
 
-    return () => {
-      channel?.unsubscribe();
-    };
-  }, []);
+    const dataArray = await Promise.all(
+      data.map(async (i) => {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("username")
+          .eq("id", i.from_user_id);
+        if (error) {
+          console.error("Fetch error:", error.message);
+          return null;
+        }
+        if (!data || data.length === 0) {
+          console.log("error");
+          return null;
+        }
+        return data[0].username;
+      })
+    );
 
-  // 채널 연결 및 기존 메세지 가져오기
-  useEffect(() => {
-    if (!supabase) {
+    return dataArray;
+  };
+  const fetchAllFriend = async () => {
+    await fetchFriends().then((friends) => {
+      if (friends === undefined) {
+        return;
+      }
+      fetchFriends2().then((friends2) => {
+        if (friends === undefined) {
+          return;
+        }
+        setFriends(friends.concat(friends2));
+      });
+    });
+  };
+  const fetchFriends2 = async () => {
+    const user = await supabase.auth.getUser();
+    if (supabase === null) {
+      return;
+    }
+    const { data, error } = await supabase
+      .from("friend_requests")
+      .select("to_user_id")
+      .eq("from_user_id", user.data.user?.id)
+      .eq("status", true);
+
+    if (error) {
+      console.error("Fetch error:", error.message);
+      return;
+    }
+    if (data == null) {
+      console.log("error");
       return;
     }
 
-    setChannel(supabase.channel(channelName));
+    const dataArray = await Promise.all(
+      data.map(async (i) => {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("username")
+          .eq("id", i.to_user_id);
+        if (error) {
+          console.error("Fetch error:", error.message);
+          return null;
+        }
+        if (!data || data.length === 0) {
+          console.log("error");
+          return null;
+        }
+        return data[0].username;
+      })
+    );
+    return dataArray;
+  };
 
+  //사용자 초대
+  const inviteFriend = async (username: string) => {
+    const user = await supabase.auth.getUser();
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("username", username);
+    const friend_id = data?.[0].id;
+
+    if (error) {
+      console.log(error.message);
+    }
+
+    await supabase.from("room_requests").insert([
+      {
+        from_user_id: user.data.user?.id,
+        to_user_id: friend_id,
+        room_id: roomId,
+        status: "pending",
+      },
+    ]);
+  };
+
+  // 채널 이벤트 listen
+  useEffect(() => {
+    if (supabase.channel === null) {
+      return;
+    }
+    fetchAllFriend();
+    console.log("channel listen");
     // 기존 메시지 가져오기
     fetchMessages().then((messages) => {
       if (messages === undefined) {
@@ -137,16 +241,12 @@ export default function Chat() {
 
       setMessages(messages);
     });
-  }, [supabase, channelName]);
 
-  // 채널 이벤트 listen
-  useEffect(() => {
-    if (channel === null) {
-      return;
-    }
-    console.log("channel listen");
+    fetchFriends();
+    console.log(friends);
 
-    channel
+    supabase
+      .channel(channelName)
       .on(
         "postgres_changes",
         {
@@ -158,7 +258,7 @@ export default function Chat() {
         handleInserts
       )
       .subscribe();
-  }, [channel]);
+  }, [supabase]);
 
   return (
     <main className={styles.main}>
@@ -179,15 +279,17 @@ export default function Chat() {
         <button onClick={handleSendMessage}>Send Message</button>
 
         <div>
-          <input
-            type="text"
-            value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
-          />
-        </div>
-
-        <div>
           <button onClick={deleteMessage}>delete Message</button>
+        </div>
+        <div>
+          {friends.map((username, index) => (
+            <li key={index}>
+              {username}
+              <button onClick={() => inviteFriend(username)}>
+                채팅방 초대
+              </button>
+            </li>
+          ))}
         </div>
       </div>
     </main>
